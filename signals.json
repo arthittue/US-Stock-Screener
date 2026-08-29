@@ -58,5 +58,17 @@
     "flag_price": 252.05,
     "sl": 231.0,
     "dr_symbols": "CRM01 CRM06 CRM80"
+  },
+  {
+    "symbol": "HPQ",
+    "name": "HP Inc.",
+    "grade": "B",
+    "score": 71.2,
+    "earnings_date": "2026-08-26",
+    "timing": "unknown",
+    "flag_date": "2026-08-28",
+    "flag_price": 29.63,
+    "sl": 26.729999542236328,
+    "dr_symbols": ""
   }
 ]

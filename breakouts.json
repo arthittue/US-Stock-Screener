@@ -1,0 +1,20 @@
+[
+  {
+    "symbol": "CRM",
+    "date": "2026-08-28",
+    "breaks": [
+      "d0_high"
+    ],
+    "close": 256.0,
+    "grade": "B"
+  },
+  {
+    "symbol": "HPQ",
+    "date": "2026-08-28",
+    "breaks": [
+      "d0_high"
+    ],
+    "close": 30.520000457763672,
+    "grade": null
+  }
+]
