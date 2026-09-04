@@ -356,25 +356,6 @@ def format_low_breaks(snaps, removed=()):
     return "\n".join(lines)
 
 
-def format_open_report(items):
-    """ยืนยันช่วงเปิดตลาด US สำหรับหุ้นที่ติดตาม — None ถ้าไม่มีข้อมูล"""
-    if not items:
-        return None
-    lines = ["🇺🇸 ตลาด US เปิดแล้ว ~30 นาที (หุ้นที่ติดตาม)"]
-    for it in items:
-        icon = "🟢" if it["day_pct"] >= 0 else "🔴"
-        line = f"{icon} {it['symbol']} {it['price']:,.2f} ({_signed(it['day_pct'])})"
-        if it.get("gap_pct") is not None:
-            line += f" · gap {_signed(it['gap_pct'])}"
-        if it.get("above_open") is True:
-            line += " · เหนือราคาเปิด ✅"
-        elif it.get("above_open") is False:
-            line += " · ต่ำกว่าราคาเปิด ⚠️"
-        lines.append(line)
-    lines.append("\n(ราคาระหว่างวัน อาจดีเลย์ ~15 นาที)")
-    return "\n".join(lines)
-
-
 def format_weekly(items):
     """สรุปผลหุ้นที่เคยแจ้ง (PEAD drift) — None ถ้าไม่มีสัญญาณในช่วงที่ดู"""
     if not items:
@@ -382,10 +363,17 @@ def format_weekly(items):
     items = sorted(items, key=lambda it: it["pct"], reverse=True)
     lines = ["📊 สรุปผลหุ้นที่บอทแจ้ง (30 วันล่าสุด)"]
     for it in items:
-        icon = GRADE_ICON.get(it.get("grade"), "⚪")
-        score = f" · {it['score']:.0f}" if it.get("score") is not None else ""
+        # ⭐ set_cross = สัญญาณข้ามเกณฑ์ไทย (คนละ cohort กับเกรด — เกรดเดิมเป็นข้อมูลประกอบ)
+        if it.get("signal_type") == "set_cross":
+            icon = "⭐"
+            score = f" {it['score']:.0f}/15" if it.get("score") is not None else ""
+            tag = f"[SET≥10{score} · เกรดเดิม {it.get('grade') or '?'}]"
+        else:
+            icon = GRADE_ICON.get(it.get("grade"), "⚪")
+            score = f" · {it['score']:.0f}" if it.get("score") is not None else ""
+            tag = f"[เกรด {it['grade']}{score}]"
         lines.append("")
-        lines.append(f"{icon} {it['symbol']} [เกรด {it['grade']}{score}] "
+        lines.append(f"{icon} {it['symbol']} {tag} "
                      f"แจ้ง {it['flag_date']} @ {it['flag_price']:,.2f}")
         line = (f"   ตอนนี้ {it['price_now']:,.2f} → {_signed(it['pct'])} "
                 f"({it['days']} วัน)")
@@ -542,11 +530,13 @@ def format_stats(groups, total):
         return None
     lines = ["📊 สถิติสะสมสัญญาณที่บอทแจ้ง",
              f"ทั้งหมด {total} สัญญาณ · ประเมินได้ {all_g['n']}"]
-    for key, label in (("A", "เกรด A"), ("B", "เกรด B"), ("all", "รวมทุกเกรด")):
+    for key, icon, label in (("A", "🔵", "เกรด A"), ("B", "🟡", "เกรด B"),
+                             ("set_cross", "⭐", "ข้ามเกณฑ์ไทย SET≥10"),
+                             ("all", "⚪", "รวมทุกเกรด")):
         g = groups.get(key)
         if not g or not g["n"]:
             continue
-        lines += ["", f"{GRADE_ICON.get(key, '⚪')} {label} — {g['n']} ตัว"]
+        lines += ["", f"{icon} {label} — {g['n']} ตัว"]
         for h in HORIZONS:
             hh = g["horizons"][h]
             if hh["n"]:
@@ -743,6 +733,12 @@ def format_status(st):
     lines.append(f"📊 สัญญาณสะสม {st['signals_total']}"
                  + (f" · ล่าสุด {sig['symbol']} {sig['grade']} ({sig['flag_date']})"
                     if sig else ""))
+    # เกณฑ์ไทย 14 วัน: ตัวที่ข้ามติดกันหลุดจากการตามเงียบ ๆ — ⚠️ แจ้งครั้งเดียวตอนสตรีค 2 ที่เหลือดูที่นี่
+    resc = st.get("rescore") or {}
+    stale = ", ".join(f"{s['symbol']} ({s['skip_reason']} ×{s['skip_streak']})"
+                      for s in resc.get("stale") or [])
+    lines.append(f"🇹🇭 เกณฑ์ไทย: ตาม {resc.get('tracked', 0)} ตัว"
+                 + (f" · ข้ามติดกัน ≥2 วัน: {stale}" if stale else ""))
 
     lines.append("")
     log = st["log"]

@@ -5,7 +5,7 @@ gem-lab (`lib/scanlog.mjs`) อ่าน CSV ตามชื่อคอลั�
 ไฟล์นี้จึงต้อง "สะสม" หนึ่งแถวต่อ (scan_date, ticker) เหมือนไทย (ไทย append ซ้ำแล้ว dedup ตอนอ่าน — ที่นี่กันตั้งแต่เขียน: รอบหลังทับรอบก่อนของวันเดียวกัน)
 score = คะแนน SET 0-15 (bot.set_score คิดสด ณ วันเขียน) · grade = A–D ของ composite 5-factor (เพิ่มท้ายสุด ไม่กระทบตัวอ่านของไทย)
 เขียนจาก /scanlog และสแกน 08:30 (bot.main — bars จาก fetch_cache ที่ run_scan เพิ่งดึง ไม่ยิงเน็ตซ้ำ) · utf-8-sig + CRLF เปิด Excel ได้ ·
-เขียนไม่ได้ (ไฟล์ถูก Excel ล็อก) → log เตือน ไม่ล้มสแกน (พฤติกรรมเดียวกับไทย) · track ใน git เหมือน signals.json
+เขียนไม่ได้ (ไฟล์ถูก Excel ล็อก) → log เตือน ไม่ล้มสแกน (พฤติกรรมเดียวกับไทย) · gitignore เหมือน signals.json
 """
 import csv
 import logging
@@ -55,7 +55,8 @@ def csv_row(row, scored, scan_date):
     """แถว CSV จากแถวสแกน + คะแนนสด (None = ดึงราคาไม่ได้ → ใช้ set_pts ณ วันสแกน เว้นช่องที่คิดไม่ได้)"""
     s = scored or {}
     pts = s.get("pts") if scored else row.get("set_pts")
-    day = scan_date.isoformat() if hasattr(scan_date, "isoformat") else str(scan_date)
+    # วันที่แถว = วันแท่งจริงที่คิดคะแนน (asof) — รันวันหยุดจะทับแถวเดิม ไม่เกิดแถวผี (เคส HK 30 ส.ค.)
+    day = s.get("asof") or (scan_date.isoformat() if hasattr(scan_date, "isoformat") else str(scan_date))
     return [
         day, csv_ticker(row["symbol"]), row.get("earnings_date") or "",
         _f2(row.get("ret_d0_pct")), _f2(row.get("vol_ratio")), _f2(s.get("since_pct")), _f2(s.get("price")),

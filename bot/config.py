@@ -14,8 +14,11 @@ class Config:
     chat_id: str
     fmp_api_key: str
     lookback_days: int = 2
+    scanlog_lookback_days: int = 7     # /scanlog เปล่าๆ ย้อนหลังกี่วัน — แยกจาก /scan และสแกน 08:30
     max_api_calls: int = 200
     finnhub_api_key: str = ""      # ตัวเลือก: ปฏิทินงบ Finnhub (timing bmo/amc)
+    set_qualify_min: int = 10      # เกณฑ์ไทย: คะแนน ≥ นี้ครั้งแรก → แจ้ง + เข้า auto-watch
+    rescore_days: int = 14         # ตามคิดคะแนน SET ซ้ำกี่วันหลังงบ (bot/rescore.py)
 
 
 def load_config(env_path: Path | None = None) -> Config:
@@ -30,6 +33,9 @@ def load_config(env_path: Path | None = None) -> Config:
         chat_id=os.environ["TELEGRAM_CHAT_ID"],
         fmp_api_key=os.environ["FMP_API_KEY"],
         lookback_days=int(os.environ.get("SCAN_LOOKBACK_DAYS", "2")),
+        scanlog_lookback_days=int(os.environ.get("SCANLOG_LOOKBACK_DAYS", "7")),
         max_api_calls=int(os.environ.get("MAX_API_CALLS", "200")),
         finnhub_api_key=os.environ.get("FINNHUB_API_KEY", "").strip(),
+        set_qualify_min=int(os.environ.get("SET_QUALIFY_MIN", "10")),
+        rescore_days=int(os.environ.get("RESCORE_DAYS", "14")),
     )

@@ -16,7 +16,7 @@ from telegram.ext import (
     filters,
 )
 
-from bot import fetch_cache, instance_lock
+from bot import fetch_cache, instance_lock, rescore
 from bot.breakouts import record_breakouts
 from bot.buttons import (
     add_plan_button,
@@ -40,7 +40,6 @@ from bot.formatter import (
     format_hot,
     format_lookup,
     format_low_breaks,
-    format_open_report,
     format_plan,
     format_reminders,
     format_scan,
@@ -54,8 +53,9 @@ from bot.formatter import (
 )
 from bot.hot import classify_watch
 from bot.levels import below_low_5d
-from bot.jobstate import PUSH_WEEKDAYS, already_ran, claim, due_catchup, release
-from bot.openbell import build_open_report, fetch_quote, fetch_yahoo_quote, in_open_window
+from bot.jobstate import (PUSH_WEEKDAYS, already_ran, claim, due_catchup,
+                          last_breakout_bar, last_run, release,
+                          set_breakout_bar, widen_lookback)
 from bot.lookup import LOOKUP_MAX, SET_RULE, lookup_symbol, parse_tickers
 from bot.nasdaq_cal import fetch_nasdaq_earnings
 from bot.plan import (PLAN_MAX, build_plan, parse_plan_command,
@@ -71,8 +71,11 @@ from bot.weekly import SIGNAL_LOOKBACK_DAYS, build_weekly_items
 from bot.earnings_store import default_sources, known_earnings, refresh
 from bot.prices import get_prices, prefetch
 from bot.yahoo_prices import fetch_yahoo_prices
+from bot.yahoo_quote import fetch_yahoo_quote
+from bot.set_score import SET_SCORE_MAX
 from bot.watchlist import (
     AUTO_WATCH_DAYS,
+    AUTO_WATCH_MAX,
     WATCHLIST_MAX,
     active_auto,
     add_symbols,
@@ -133,6 +136,12 @@ async def _send_chart(bot, chat_id, symbol, levels=None, caption=None,
         logger.exception("chart %s failed", symbol)
 
 
+def _us_market_maybe_open(t):
+    """ช่วงที่แท่ง "วันนี้" จาก Yahoo อาจยังเป็น intraday ไม่ปิด — ตลาด US เปิดเร็วสุด 20:30 ไทย
+    (DST) ปิดช้าสุด ~04:00 เผื่อขอบถึง 05:00 (เหตุผลเดียวกับ jobstate.CATCHUP_UNTIL)"""
+    return t >= time(20, 0) or t < time(5, 0)
+
+
 async def _do_scan_and_send(bot, chat_id, lookback):
     scan = await asyncio.to_thread(run_scan, CONFIG, lookback,
                                    secondary_cal_fn=fetch_nasdaq_earnings)
@@ -140,7 +149,7 @@ async def _do_scan_and_send(bot, chat_id, lookback):
     save_reports(scan, messages)
     # บันทึกสัญญาณ A/B ลง signals.json (dedup ต่อรอบงบ) — ฐานของสรุปรายสัปดาห์
     record_signals(scan["candidates"], scan["to_date"])
-    _record_scan_csv(scan)                      # scan_log.csv (schema ไทย + grade) ให้ gem-lab
+    rows, scored = _record_scan_csv(scan)       # scan_log.csv (schema ไทย + grade) ให้ gem-lab
     # ปุ่มรวม "ติดตามถาวรทั้งหมด" ใต้ข้อความสแกนฉบับสุดท้าย (มี candidate ≥2)
     manual = set(load_watchlist())
     all_markup = build_watch_all_markup(
@@ -158,14 +167,62 @@ async def _do_scan_and_send(bot, chat_id, lookback):
                           reply_markup=add_plan_button(build_watch_markup(
                               c["symbol"], in_manual=c["symbol"] in manual,
                               in_auto=True), c["symbol"]))
-    # หุ้นเกรด A/B เข้า watchlist อัตโนมัติ → ได้เตือนทะลุแนว/วันงบต่อเอง
-    added = auto_add([c["symbol"] for c in scan["candidates"]])
+    # เกณฑ์ไทยมีชีวิต 14 วัน (bot/rescore.py) — อยู่ *หลัง* ส่งรายงานสแกน: rescore ล้ม/ช้า
+    # ต้องไม่ฉุดรายงานหลัก (เดิมอยู่ก่อนส่ง — state เสีย 1 entry = รายงานทั้งวันหาย)
+    crossed = []
+    if _us_market_maybe_open(datetime.now().time()):
+        # แท่งวันนี้ยังเป็น intraday ไม่ปิด — ตัดสิน qualified ตอนนี้จะกินสิทธิ์แจ้งครั้งแรกถาวร
+        logger.info("rescore: ตลาด US อาจเปิดอยู่ — เลื่อนคิดคะแนนไปรอบสแกนถัดไป")
+    else:
+        try:
+            crossed = await asyncio.to_thread(
+                rescore.run, rows, scored, lambda s: get_prices(s, 250),
+                date.fromisoformat(scan["to_date"]), CONFIG.set_qualify_min,
+                CONFIG.rescore_days, prefetch=prefetch)
+            # crossing → signals.json (signal_type=set_cross) — feedback loop ของเกณฑ์ SET≥10:
+            # เข้า weekly drift + /stats แยก cohort · dedup ต่อ (symbol, earn, type) retry ไม่เบิ้ล
+            record_signals(rescore.signal_candidates(crossed), scan["to_date"])
+            # ตัวที่เพิ่งข้ามครบ 2 วันติด = วันแรกที่ "ข้ามถาวร" — rescore.run ปักธงไว้ ที่นี่กินธงทิ้ง
+            # จึงได้ใบแจ้งใบเดียวจริงแม้สแกนซ้ำวันเดิม (job + /scan + catch-up) · ≥3 ไปโผล่ที่ /status
+            notice = rescore.stale_notice(rescore.pop_stale_notices())
+            if notice:
+                await bot.send_message(chat_id=chat_id, text=notice)
+        except Exception:
+            logger.exception("rescore failed")
+            await bot.send_message(
+                chat_id=chat_id,
+                text="⚠️ เกณฑ์ไทยมีชีวิต (rescore) ล้มวันนี้ — จะคิดใหม่รอบสแกนถัดไป · ดู bot.log")
+    # ตัวข้ามเกณฑ์ไทยที่ไม่อยู่ในลิสต์ A/B วันนี้ (แจ้งไปแล้วในข้อความสแกน) — แจ้งแยก + กราฟ
+    cand_syms = [c["symbol"] for c in scan["candidates"]]
+    new_crossed = [c for c in crossed if c["symbol"] not in set(cand_syms)]
+    note = rescore.format_crossed(new_crossed, CONFIG.set_qualify_min,
+                                  auto_days=AUTO_WATCH_DAYS)
+    if note:
+        await bot.send_message(chat_id=chat_id, text=note)
+    # กราฟ+ปุ่มเหมือน candidate — bars อยู่ใน fetch_cache จาก rescore แล้ว ไม่ยิงเน็ตเพิ่ม
+    for c in new_crossed[:CHART_MAX]:
+        await _send_chart(bot, chat_id, c["symbol"],
+                          {"sl": c.get("pre_low"), "reaction_date": c.get("d0")},
+                          caption=f"⭐ {c['symbol']} — SET {c['pts']}/{SET_SCORE_MAX} "
+                                  f"(วันทำการที่ {c['days_after']} หลังงบ)",
+                          reply_markup=add_plan_button(build_watch_markup(
+                              c["symbol"], in_manual=c["symbol"] in manual,
+                              in_auto=True), c["symbol"]))
+    # หุ้นเกรด A/B + ตัวข้ามเกณฑ์ไทย เข้า watchlist อัตโนมัติ → ได้เตือนทะลุแนว/วันงบต่อเอง
+    added, evicted = auto_add(cand_syms + [c["symbol"] for c in crossed
+                                           if c["symbol"] not in cand_syms])
     if added:
         await bot.send_message(
             chat_id=chat_id,
             text=f"➕ ติดตามอัตโนมัติ {AUTO_WATCH_DAYS} วัน: {', '.join(added)}\n"
                  "จะเตือนเมื่อทะลุแนว High 5 วัน/3 เดือนก่อนงบ · "
                  "เอาออก: เลิกติดตาม <ticker>")
+    if evicted:
+        # เพดานเต็มตัวเก่าสุดหลุด — ต้องบอก ไม่งั้นผู้ใช้เชื่อว่ายังเฝ้าอยู่ (ฤดูงบเกิน 20 ได้จริง)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"➖ หลุดจากติดตามอัตโนมัติ (เต็มเพดาน {AUTO_WATCH_MAX}): "
+                 f"{', '.join(evicted)}\nยังต้องการเฝ้า: ติดตาม <ticker> (ถาวร)")
 
 
 def _record_scan_csv(scan):
@@ -201,7 +258,7 @@ async def _run_scanlog(update, context, lookback):
 async def cmd_scanlog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
-    lookback = CONFIG.lookback_days
+    lookback = CONFIG.scanlog_lookback_days
     if context.args:
         try:
             lookback = max(1, min(30, int(context.args[0])))
@@ -237,7 +294,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/scan — สแกนย้อนหลัง 2 วัน\n"
         "/scan 7 — สแกนย้อนหลัง 7 วัน\n"
         "/scanlog (หรือพิมพ์ สแกนล็อก) — สองเกณฑ์คู่กัน: 🇹🇭 SET (ปิด D0 ≥2% & vol ≥1.5× · คะแนน 0-15 ⭐) + เดิม A/B\n"
-        "  แถวเดียวกันลง scan_log.csv (schema ไทย + grade) ให้ gem-lab · /scanlog 7\n"
+        "  แถวเดียวกันลง scan_log.csv (schema ไทย + grade) ให้ gem-lab\n"
+        "  ค่าเริ่มต้นย้อนหลัง 7 วัน · ใส่เลขเองได้ 1-30 เช่น /scanlog 14\n"
         "/help — วิธีใช้\n"
         "/status (หรือพิมพ์ สถานะ) — สุขภาพบอท: รันอยู่ไหม/ต้อง restart ไหม,\n"
         "job วันนี้, รอตอบรับ, FMP 402, error, สแกนล่าสุด\n"
@@ -281,8 +339,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "เตือนวันงบ: ทุกวัน 08:25 น.\n"
         "เตือนทะลุแนว (High 5วัน/3ด.ก่อนงบ)\n"
         "เตือนหลุด SL/Low ก่อนงบ: อังคาร–เสาร์ 08:20 น.\n"
-        "สรุปผลรายสัปดาห์: อาทิตย์ 09:00 น.\n"
-        "ยืนยันเปิดตลาด US (หุ้นที่ติดตาม): ~30 นาทีหลังเปิด"
+        "สรุปผลรายสัปดาห์: อาทิตย์ 09:00 น."
     )
 
 
@@ -606,7 +663,7 @@ async def _dispatch_text(update, context, text):
         return
     words = text.strip().split()
     if words and words[0].lower() in ("สแกนล็อก", "สองเกณฑ์", "scanlog"):
-        lookback = CONFIG.lookback_days
+        lookback = CONFIG.scanlog_lookback_days
         if len(words) > 1 and words[1].isdigit():
             lookback = max(1, min(30, int(words[1])))
         await _run_scanlog(update, context, lookback)
@@ -757,6 +814,7 @@ async def breakout_job(context: ContextTypes.DEFAULT_TYPE):
         universe = load_universe()
         auto = active_auto()
         alerts, sl_alerts, low_alerts, pull_alerts, dead = [], [], [], [], []
+        bar_dates = []           # prices[0]["date"] ของทุกตัวที่ดึงราคาได้ — เทียบหาแท่งซ้ำ
         await asyncio.to_thread(prefetch, symbols, 250, client)  # ดึงขนานก่อน
         for sym in symbols:
             try:
@@ -764,6 +822,8 @@ async def breakout_job(context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 logger.exception("breakout check %s failed", sym)
                 continue
+            if snap:
+                bar_dates.append(snap["last_date"])
             if snap and snap.get("new_breaks"):
                 alerts.append(snap)
             if snap and snap.get("sl_break"):
@@ -776,6 +836,13 @@ async def breakout_job(context: ContextTypes.DEFAULT_TYPE):
             # (state ไม่ใช่ edge — ตัวที่หลุดค้างมาหลายวันก็โดนเก็บ) manual ไม่แตะ
             if snap and sym in auto and below_low_5d(snap.get("levels")):
                 dead.append(sym)
+        # แท่งล่าสุด (ทุกตัวที่ดึงราคาได้) เหมือนรอบก่อนเป๊ะ = วันหยุด US/Yahoo ยังไม่มีแท่งใหม่
+        # (เช่น อังคารหลัง Labor Day ยังเห็นแท่งศุกร์ตัวเดิมที่รอบเสาร์ประมวลผลไปแล้ว) —
+        # ข้ามทั้งรอบกันแจ้งซ้ำ (ดึงราคาไม่ได้เลยสักตัว = bar_dates ว่าง ปล่อยผ่านตามเดิม ไม่แตะ last_bar)
+        bar_date = max(bar_dates) if bar_dates else None
+        if bar_date is not None and bar_date == last_breakout_bar():
+            logger.info("breakout: แท่งล่าสุด %s เหมือนรอบก่อน (วันหยุด/ยังไม่มีแท่งใหม่) — ข้ามแจ้งซ้ำ", bar_date)
+            return
         removed = auto_remove(dead) if dead else []
         # เหตุการณ์ทะลุแนวลง breakouts.json — gem-lab อ่านไปเป็น candidate ยิง Gem
         record_breakouts(alerts)
@@ -796,31 +863,13 @@ async def breakout_job(context: ContextTypes.DEFAULT_TYPE):
                               snap.get("levels"),
                               caption=f"{tag} {snap['symbol']} — "
                                       f"ปิด {snap['price']:,.2f}")
+        # บันทึกหลังงานแจ้งเตือนสำเร็จทั้งหมดเท่านั้น — ส่งข้อความ/ส่งกราฟล้มกลางคัน exception
+        # จะโยนออกจาก work() ก่อนถึงบรรทัดนี้ claim ถูกคืน (_run_claimed) แล้ว catch-up รอบถัดไป
+        # retry ส่งซ้ำได้ — ห้ามบันทึก last_bar ไปก่อนแล้วเงียบทั้งชุดถ้าส่งไม่สำเร็จจริง
+        if bar_date is not None:
+            set_breakout_bar(bar_date)
 
     await _run_claimed(context, "breakout", work)
-
-
-async def openbell_job(context: ContextTypes.DEFAULT_TYPE):
-    """หลังตลาด US เปิด ~30 นาที: ยืนยันว่าหุ้นที่ติดตาม gap ยังอยู่ไหม
-
-    ตั้งยิง 21:00 และ 22:00 ไทย — in_open_window เลือกรอบที่ตรงฤดู (DST) เอง
-    """
-    if not in_open_window(datetime.now(TZ)):
-        return
-    symbols = all_watched()
-    if not symbols:
-        return
-    try:
-        client = FMPClient(api_key=CONFIG.fmp_api_key,
-                           max_api_calls=len(symbols) + 2)
-
-        items = await asyncio.to_thread(
-            build_open_report, symbols, lambda sym: fetch_quote(sym, client=client))
-        msg = format_open_report(items)
-        if msg:
-            await context.bot.send_message(chat_id=CONFIG.chat_id, text=msg)
-    except Exception:
-        logger.exception("openbell job failed")
 
 
 def _weekly_get_prices(client, sym):
@@ -895,9 +944,12 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
     # job ตั้งรันทุกวัน แล้วเช็ควันในนี้เอง (กันความกำกวมเรื่อง days ของ JobQueue)
     if datetime.now(TZ).weekday() not in PUSH_WEEKDAYS:
         return
+    # เครื่องปิดหลายวัน → ย้อนหน้าต่างสแกนครอบวันที่หายไป (ต้องอ่านก่อน claim จะทับค่าเดิม)
+    lookback = widen_lookback(CONFIG.lookback_days, last_run("scan"),
+                              datetime.now(TZ).date(), cap=CONFIG.rescore_days)
     await _run_claimed(context, "scan",
                        lambda: _do_scan_and_send(context.bot, CONFIG.chat_id,
-                                                 CONFIG.lookback_days))
+                                                 lookback))
 
 
 async def catchup_job(context: ContextTypes.DEFAULT_TYPE):
@@ -1038,9 +1090,6 @@ def build_app(config):
     app.job_queue.run_daily(breakout_job, time=time(8, 20, tzinfo=TZ))
     # สรุปผลรายสัปดาห์ เช้าวันอาทิตย์ (เช็ค weekday ใน callback)
     app.job_queue.run_daily(weekly_job, time=time(9, 0, tzinfo=TZ))
-    # ยืนยันเปิดตลาด US: ยิงสองรอบ in_open_window เลือกรอบที่ห่างเปิด 20-80 นาที
-    app.job_queue.run_daily(openbell_job, time=time(21, 0, tzinfo=TZ))
-    app.job_queue.run_daily(openbell_job, time=time(22, 0, tzinfo=TZ))
     # catch-up วนซ้ำ: รอบแรกเก็บ job ที่พลาดตอนเครื่องปิด/หลับ รอบถัดๆ ไป
     # retry job ที่ล้มแล้วถูกคืน claim (_run_claimed) — กันซ้ำด้วย claim
     app.job_queue.run_repeating(catchup_job, interval=CATCHUP_INTERVAL, first=15)
