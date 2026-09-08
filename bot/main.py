@@ -119,6 +119,22 @@ def _authorized(update: Update) -> bool:
     return str(update.effective_chat.id) == str(CONFIG.chat_id)
 
 
+def _button_authorized(query) -> bool:
+    """ปุ่มถูกกดในแชทที่ตั้งค่าไว้ไหม — เทียบ chat เหมือน _authorized ฝั่งข้อความ
+
+    เดิมเทียบ query.from_user.id กับ CONFIG.chat_id ตรงๆ ซึ่งใช้ได้เฉพาะแชทส่วนตัว
+    (chat id = user id) · พอ TELEGRAM_CHAT_ID เป็นกลุ่ม (ค่าติดลบ) id ของคนกดจะไม่มี
+    วันตรง ทุกปุ่มจึงเงียบสนิทโดยไม่มี log — ต้องเทียบ chat ของข้อความที่ปุ่มติดอยู่แทน
+
+    ไม่มี chat ให้ดู (InaccessibleMessage) → ถอยไปเทียบ from_user.id ตามเดิม
+    """
+    chat_id = getattr(getattr(query, "message", None), "chat", None)
+    chat_id = getattr(chat_id, "id", None)
+    if chat_id is not None:
+        return str(chat_id) == str(CONFIG.chat_id)
+    return str(query.from_user.id) == str(CONFIG.chat_id)
+
+
 async def _send_chart(bot, chat_id, symbol, levels=None, caption=None,
                       reply_markup=None):
     """แนบกราฟจากราคาใน cache (เพิ่งดึงตอนสร้างข้อความ — ไม่มี API call เพิ่ม)
@@ -985,7 +1001,7 @@ async def on_button(update, context):
     query = update.callback_query
     if query is None:
         return
-    if str(query.from_user.id) != str(CONFIG.chat_id):
+    if not _button_authorized(query):
         await _safe_answer(query)
         return
     parsed = parse_callback(query.data or "")

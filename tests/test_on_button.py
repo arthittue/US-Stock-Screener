@@ -11,14 +11,18 @@ from bot.config import Config
 from bot.main import build_app, on_button
 
 DUMMY_CONFIG = Config(telegram_token="123:ABC", chat_id="1", fmp_api_key="k")
+# TELEGRAM_CHAT_ID ที่เป็นกลุ่ม — id ติดลบ ไม่มีวันเท่ากับ id ของคนกด
+GROUP_CONFIG = Config(telegram_token="123:ABC", chat_id="-5421", fmp_api_key="k")
 
 
 class FakeQuery:
     def __init__(self, data, user_id=1, markup=None,
-                 answer_fails=False, edit_fails=False):
+                 answer_fails=False, edit_fails=False, chat_id=None):
         self.data = data
         self.from_user = SimpleNamespace(id=user_id)
         self.message = SimpleNamespace(reply_markup=markup)
+        if chat_id is not None:
+            self.message.chat = SimpleNamespace(id=chat_id)
         self.log = []
         self.answers = []
         self.edits = []
@@ -38,8 +42,8 @@ class FakeQuery:
         self.edits.append(reply_markup)
 
 
-def _run(query, monkeypatch, add_result=None, remove_result=None):
-    monkeypatch.setattr(m, "CONFIG", DUMMY_CONFIG)
+def _run(query, monkeypatch, add_result=None, remove_result=None, config=None):
+    monkeypatch.setattr(m, "CONFIG", config or DUMMY_CONFIG)
 
     def fake_add(syms):
         query.log.append("add")
@@ -104,6 +108,25 @@ def test_unwatch_drops_pressed_button(monkeypatch):
 def test_unauthorized_answers_silently_without_action(monkeypatch):
     q = FakeQuery("w:EL", user_id=999)
     _run(q, monkeypatch)
+    assert q.log == ["answer"]
+
+
+def test_group_chat_button_authorized_by_chat_not_user(monkeypatch):
+    """CHAT_ID เป็นกลุ่ม: id คนกดไม่มีวันตรง — ต้องดูที่ chat ของข้อความแทน
+
+    เดิมเทียบ from_user.id ทำให้ทุกปุ่มในกลุ่มเงียบสนิท (ตอบ callback เปล่าๆ ไม่มี log)
+    """
+    q = FakeQuery("w:EL", user_id=999, chat_id="-5421",
+                  markup=build_watch_markup("EL"))
+    _run(q, monkeypatch, config=GROUP_CONFIG)
+    assert q.log == ["add", "answer", "edit"]
+
+
+def test_button_from_other_chat_still_rejected(monkeypatch):
+    """แชทอื่นกดปุ่มที่ forward ไป — chat ไม่ตรงก็ยังต้องไม่ทำงาน"""
+    q = FakeQuery("w:EL", user_id=1, chat_id="-9999",
+                  markup=build_watch_markup("EL"))
+    _run(q, monkeypatch, config=GROUP_CONFIG)
     assert q.log == ["answer"]
 
 
