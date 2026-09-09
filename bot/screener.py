@@ -40,7 +40,7 @@ def load_universe(csv_path=UNIVERSE_CSV):
 
 
 def run_scan(config, lookback_days=None, client=None, secondary_cal_fn=None,
-             get_prices_fn=None, today=None, pending_path=None):
+             get_prices_fn=None, today=None, pending_path=None, only_symbols=None):
     """สแกนหุ้นออกงบใน universe ให้คะแนน 5-factor + levels
 
     secondary_cal_fn(from_date, to_date) → ปฏิทินแหล่งที่สอง (รูปเดียวกับ FMP)
@@ -90,6 +90,7 @@ def run_scan(config, lookback_days=None, client=None, secondary_cal_fn=None,
     # entry ที่รอตอบรับจากรอบก่อนแต่หลุดหน้าต่างปฏิทินไปแล้ว (งบ AMC ศุกร์ / ก่อนวันหยุด US)
     reported += pending_store.carry_forward(
         reported, pending_store.load_pending(pending_path), today.date())
+    if only_symbols is not None:reported=[r for r in reported if r['symbol'] in set(only_symbols)]
     for item in reported:
         if item["timing"] == "unknown":
             item["timing"] = timing_map.get(_canon(item["symbol"]), "unknown")
@@ -160,6 +161,8 @@ def run_scan(config, lookback_days=None, client=None, secondary_cal_fn=None,
         })
 
     # จำตัวที่ยังรอ (waiting/no_data) ไว้เติมรอบหน้าแม้หลุดหน้าต่างปฏิทิน
+    if only_symbols is not None:
+        pending += [r for r in pending_store.load_pending(pending_path) if r.get('symbol') not in set(only_symbols)]
     pending_store.save_pending(pending, pending_path)
     candidates.sort(key=lambda c: c["score"], reverse=True)
     return {

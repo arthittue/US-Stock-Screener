@@ -69,27 +69,5 @@ def csv_row(row, scored, scan_date):
 
 def record_scan_csv(entries, scan_date, path=SCAN_CSV_PATH):
     """entries = [(แถวสแกน, set_score dict | None)] → เขียน/ทับแถวของ (scan_date, ticker) นั้น คืนจำนวนแถวที่เขียน (0 = ไม่มี/เขียนไม่ได้)"""
-    if not entries:
-        return 0
-    new = [csv_row(r, s, scan_date) for r, s in entries]
-    keys = {(x[0], x[1]) for x in new}
-    try:
-        existing = []
-        if path.exists():
-            with open(path, encoding="utf-8-sig", newline="") as f:
-                reader = csv.reader(f)
-                next(reader, None)                                      # หัวตารางเดิม — เขียนใหม่เป็น CSV_COLUMNS เสมอ
-                existing = [x for x in reader if x and (x[0], x[1]) not in keys]
-        tmp = path.with_name(path.name + ".tmp")
-        with open(tmp, "w", encoding="utf-8-sig", newline="") as f:      # newline="" → csv.writer ออก CRLF เดียว ไม่ซ้อน
-            w = csv.writer(f)
-            w.writerow(CSV_COLUMNS)
-            w.writerows(existing)
-            w.writerows(new)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except OSError as e:
-        logger.warning("เขียน scan_log.csv ไม่ได้ (%s) — ข้าม ไม่ล้มสแกน", e)
-        return 0
-    return len(new)
+    from scan_delivery import submit
+    return submit(path, CSV_COLUMNS, [csv_row(r,s,scan_date) for r,s in entries], market='US')

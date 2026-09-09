@@ -17,3 +17,8 @@ rescore_state.json
 scan_log.csv
 signals.json
 breakouts.json
+
+scan_status.json
+.scan_delivery/
+
+job_runs.sqlite3*

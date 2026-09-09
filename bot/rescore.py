@@ -253,6 +253,8 @@ def run(rows, scored, get_bars, today, min_pts, days,
     if prefetch and symbols:
         prefetch(symbols)
     entries, pts_map, skipped = rescore_entries(state, symbols, get_bars)
+    from scan_delivery import note_scan
+    note_scan(retry_symbols=list(skipped))
     # จำสตรีคการข้าม — ข้ามติดกัน = หลุดจากการตามเงียบ ๆ (ต้องเตือน) · ตัวที่ติดแถวสแกนวันนี้ (todays_pts)
     # คิดคะแนนสดไปแล้ว = สำเร็จ ต้องล้างสตรีคด้วย ไม่งั้น due() ตัดมันออกแล้วสตรีคค้าง → ⚠️ ซ้ำ/ /status ค้างชื่อ
     today_iso = today.isoformat()

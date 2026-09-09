@@ -47,6 +47,8 @@ def _load(path):
 
 def already_ran(job, path=JOB_STATE_PATH, today=None):
     today = today or date.today()
+    state=_ledger(path).state(job,today.isoformat())
+    if state in ('abandoned','failed'):return False
     return _load(path).get(job) == today.isoformat()
 
 
@@ -54,8 +56,10 @@ def claim(job, path=JOB_STATE_PATH, today=None):
     """จองสิทธิ์รัน job วันนี้ — False ถ้ามีคนรันไปแล้ว (ไม่ต้องรันซ้ำ)"""
     today = today or date.today()
     data = _load(path)
-    if data.get(job) == today.isoformat():
-        return False
+    ledger=_ledger(path)
+    state=ledger.state(job,today.isoformat())
+    if data.get(job)==today.isoformat() and state is None:return False
+    if not ledger.claim(job,today.isoformat()):return False
     data[job] = today.isoformat()
     write_json_atomic(path, data)
     return True
@@ -67,6 +71,7 @@ def release(job, path=JOB_STATE_PATH, today=None):
     ลบเฉพาะเมื่อค่าเป็นวันนี้ — claim ของวันอื่นไม่ใช่ของเรา ห้ามแตะ
     """
     today = today or date.today()
+    _ledger(path).release(job,today.isoformat())
     data = _load(path)
     if data.get(job) != today.isoformat():
         return False
@@ -136,3 +141,14 @@ def write_alive(now, path=None):
         write_json_atomic(path or ALIVE_PATH, {"ts": now.isoformat()})
     except OSError:
         logging.getLogger(__name__).warning("เขียน last_alive.json ไม่สำเร็จ", exc_info=True)
+
+
+def _ledger(path=None):
+    from durable_jobs import Ledger
+    path=JOB_STATE_PATH if path is None else path
+    return Ledger(path.with_name('job_runs.sqlite3'))
+
+
+def complete(job, path=None, today=None, slot_date=None):
+    day=slot_date or today or date.today()
+    _ledger(path).complete(job,day.isoformat())

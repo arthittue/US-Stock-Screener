@@ -33,6 +33,11 @@ _SCAN_STAMP = re.compile(r"scan_(\d{4}-\d{2}-\d{2}_\d{6})\.json$")
 def read_head_commit(root=PROJECT_ROOT):
     """commit ย่อ 7 ตัวที่ HEAD ชี้ — อ่านไฟล์ .git ตรงๆ ไม่พึ่ง git CLI · None = อ่านไม่ได้"""
     git = Path(root) / ".git"
+    if (root / '.git').is_file():
+        import subprocess
+        try:
+            return subprocess.check_output(['git','-C',str(root),'rev-parse','--short=7','HEAD'],text=True,stderr=subprocess.DEVNULL).strip()
+        except (OSError,subprocess.CalledProcessError):return None
     try:
         head = (git / "HEAD").read_text(encoding="utf-8").strip()
         if not head.startswith("ref: "):

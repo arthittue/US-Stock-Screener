@@ -1,3 +1,5 @@
+from durable_jobs import job_bot, bind, unbind, health_text
+from bot import scan_csv
 """Telegram bot entry: /scan /help + daily push อังคาร–เสาร์ 08:30 Asia/Bangkok"""
 import asyncio
 import logging
@@ -158,6 +160,9 @@ def _us_market_maybe_open(t):
     return t >= time(20, 0) or t < time(5, 0)
 
 
+from scan_delivery import async_round, note_scan, retry_exports, retry_partial
+
+@async_round('US', lambda: scan_csv.SCAN_CSV_PATH)
 async def _do_scan_and_send(bot, chat_id, lookback):
     scan = await asyncio.to_thread(run_scan, CONFIG, lookback,
                                    secondary_cal_fn=fetch_nasdaq_earnings)
@@ -244,6 +249,9 @@ async def _do_scan_and_send(bot, chat_id, lookback):
 def _record_scan_csv(scan):
     """scan_log.csv (schema Set screnner + grade) ให้ gem-lab — แถวที่ผ่านด่าน SET หรือเกณฑ์เดิม
     คะแนน SET 0-15 จาก bars ใน fetch_cache ที่ run_scan เพิ่งดึง (ไม่ยิงเน็ตซ้ำ) · คืน (rows, scored) ให้ /scanlog ใช้ต่อ"""
+    note_scan(candidate_count=len(scan.get('rows') or [])+len(scan.get('pending') or []),
+              evaluated_count=len(scan.get('rows') or []),
+              retry_symbols=[r['symbol'] for r in scan.get('pending',[]) if r.get('reason')=='no_data'])
     rows = scan.get("rows") or []
     picked = pick_rows(rows)
     scored = live_scores(picked, lambda s: fetch_cache.get(("prices", s, 250)))
@@ -252,6 +260,7 @@ def _record_scan_csv(scan):
     return rows, scored
 
 
+@async_round('US', lambda: scan_csv.SCAN_CSV_PATH)
 async def _scanlog(bot, chat_id, lookback):
     """/scanlog · "สแกนล็อก" — สแกนย้อนหลัง N วันเหมือน /scan แต่โชว์สองเกณฑ์คู่กัน (🇹🇭 SET 0-15 + เดิม A/B)
     ไม่แตะ signals/auto-watch/chart · แถวเดียวกันลง scan_log.csv"""
@@ -265,7 +274,7 @@ async def _scanlog(bot, chat_id, lookback):
 async def _run_scanlog(update, context, lookback):
     await update.message.reply_text(f"🔍 กำลังสแกน + คิดคะแนน SET ย้อนหลัง {lookback} วัน...")
     try:
-        await _scanlog(context.bot, update.effective_chat.id, lookback)
+        await _scanlog(job_bot(context.bot), update.effective_chat.id, lookback)
     except Exception:
         logger.exception("scanlog failed")
         await update.message.reply_text("⚠️ scanlog ล้มเหลว ดูรายละเอียดใน bot.log")
@@ -296,7 +305,7 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     await update.message.reply_text(f"🔍 กำลังสแกนย้อนหลัง {lookback} วัน...")
     try:
-        await _do_scan_and_send(context.bot, update.effective_chat.id, lookback)
+        await _do_scan_and_send(job_bot(context.bot), update.effective_chat.id, lookback)
     except Exception:
         logger.exception("scan failed")
         await update.message.reply_text("⚠️ สแกนล้มเหลว ดูรายละเอียดใน bot.log")
@@ -363,7 +372,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
     try:
-        await _send_status(context.bot, update.effective_chat.id)
+        await _send_status(job_bot(context.bot), update.effective_chat.id)
     except Exception:
         logger.exception("status failed")
         await update.message.reply_text("⚠️ ดูสถานะล้มเหลว ดู bot.log")
@@ -607,7 +616,7 @@ async def _handle_plan(update, context, tickers):
             "(① เข้าตอนนี้ ② ทะลุ High วันงบ ③ ย่อถึง D0 Open) SL = D0 Low "
             f"เป้า 1R/2R/3R + ราคาบาทและจำนวนหน่วยต่อ DR (สูงสุด {PLAN_MAX} ตัว)")
         return
-    await _send_plans(context.bot, update.effective_chat.id, tickers)
+    await _send_plans(job_bot(context.bot), update.effective_chat.id, tickers)
 
 
 async def _handle_risk(update, changes):
@@ -650,7 +659,7 @@ async def _dispatch_text(update, context, text):
     """แยกคำสั่งจากข้อความ — ใช้ร่วมกันระหว่างพิมพ์ไทยและ slash alias"""
     if text.strip().lower() in ("สถานะ", "status"):
         try:
-            await _send_status(context.bot, update.effective_chat.id)
+            await _send_status(job_bot(context.bot), update.effective_chat.id)
         except Exception:
             logger.exception("status failed")
             await update.message.reply_text("⚠️ ดูสถานะล้มเหลว ดู bot.log")
@@ -664,7 +673,7 @@ async def _dispatch_text(update, context, text):
         return
     if text.strip() in ("สรุป", "สรุปผล"):
         try:
-            await _send_weekly(context.bot, update.effective_chat.id,
+            await _send_weekly(job_bot(context.bot), update.effective_chat.id,
                                notify_empty=True)
         except Exception:
             logger.exception("weekly summary failed")
@@ -672,7 +681,7 @@ async def _dispatch_text(update, context, text):
         return
     if text.strip() in ("สถิติ", "สถิติสะสม", "stats"):
         try:
-            await _send_stats(context.bot, update.effective_chat.id)
+            await _send_stats(job_bot(context.bot), update.effective_chat.id)
         except Exception:
             logger.exception("stats failed")
             await update.message.reply_text("⚠️ สถิติล้มเหลว ดู bot.log")
@@ -746,7 +755,7 @@ async def _dispatch_text(update, context, text):
             markup = add_plan_button(markup, sym)
         await update.message.reply_text(format_lookup(snap),
                                         reply_markup=markup)
-        await _send_chart(context.bot, update.effective_chat.id, sym,
+        await _send_chart(job_bot(context.bot), update.effective_chat.id, sym,
                           snap.get("levels"),
                           caption=f"{sym} — ปิด {snap['price']:,.2f}")
 
@@ -769,8 +778,11 @@ async def _run_claimed(context, name, work):
     """
     if not claim(name):
         return
+    from bot import jobstate as durable_state
+    token=bind(context.bot,durable_state._ledger(),name+':'+date.today().isoformat())
     try:
         await work()
+        durable_state.complete(name)
         logger.info("%s: สำเร็จ", name)
     except Exception as e:
         logger.exception("%s job failed", name)
@@ -784,9 +796,12 @@ async def _run_claimed(context, name, work):
             note = (f"⚠️ job {name} ล้มเหลวครบ {JOB_MAX_TRIES} ครั้ง — "
                     "หยุดลองสำหรับวันนี้ (ดู bot.log)")
         try:
-            await context.bot.send_message(chat_id=CONFIG.chat_id, text=note)
+            await job_bot(context.bot).send_message(chat_id=CONFIG.chat_id, text=note)
         except Exception:
             logger.exception("%s failure notify failed", name)
+
+    finally:
+        unbind(token)
 
 
 async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
@@ -812,7 +827,7 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
         items = await asyncio.to_thread(build_reminders, symbols, get_earnings)
         msg = format_reminders(items)
         if msg:
-            await context.bot.send_message(chat_id=CONFIG.chat_id, text=msg)
+            await job_bot(context.bot).send_message(chat_id=CONFIG.chat_id, text=msg)
 
     await _run_claimed(context, "reminder", work)
 
@@ -866,7 +881,7 @@ async def breakout_job(context: ContextTypes.DEFAULT_TYPE):
         for msg in (format_breakouts(alerts), format_gap_pullbacks(pull_alerts),
                     format_sl_breaks(sl_alerts), format_low_breaks(low_alerts, removed)):
             if msg:
-                await context.bot.send_message(chat_id=CONFIG.chat_id, text=msg)
+                await job_bot(context.bot).send_message(chat_id=CONFIG.chat_id, text=msg)
         tagged = ([(s, "🚀 ทะลุแนว") for s in alerts]
                   + [(s, "🔽 ย่อเข้า gap") for s in pull_alerts]
                   + [(s, "🛑 หลุด SL") for s in sl_alerts]
@@ -876,7 +891,7 @@ async def breakout_job(context: ContextTypes.DEFAULT_TYPE):
             if snap["symbol"] in seen:      # ตัวเดียวทะลุแนว+หลุด SL วันเดียวกัน
                 continue
             seen.add(snap["symbol"])
-            await _send_chart(context.bot, CONFIG.chat_id, snap["symbol"],
+            await _send_chart(job_bot(context.bot), CONFIG.chat_id, snap["symbol"],
                               snap.get("levels"),
                               caption=f"{tag} {snap['symbol']} — "
                                       f"ปิด {snap['price']:,.2f}")
@@ -937,7 +952,7 @@ async def _send_stats(bot, chat_id):
 async def _send_status(bot, chat_id):
     """สถานะบอท (/status หรือพิมพ์ "สถานะ") — อ่าน state/log ใน thread กันบล็อก event loop"""
     st = await asyncio.to_thread(build_status, datetime.now(TZ))
-    await bot.send_message(chat_id=chat_id, text=format_status(st))
+    await bot.send_message(chat_id=chat_id, text=format_status(st)+health_text(jobstate.JOB_STATE_PATH.with_name('job_runs.sqlite3')))
 
 
 async def weekly_job(context: ContextTypes.DEFAULT_TYPE):
@@ -952,7 +967,7 @@ async def weekly_job(context: ContextTypes.DEFAULT_TYPE):
             refresh, default_sources(client, CONFIG.finnhub_api_key),
             (today + timedelta(days=REFRESH_AHEAD_DAYS + 1)).isoformat(),
             (today + timedelta(days=REFRESH_WEEKLY_DAYS)).isoformat(), today)
-        await _send_weekly(context.bot, CONFIG.chat_id)
+        await _send_weekly(job_bot(context.bot), CONFIG.chat_id)
 
     await _run_claimed(context, "weekly", work)
 
@@ -965,7 +980,7 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
     lookback = widen_lookback(CONFIG.lookback_days, last_run("scan"),
                               datetime.now(TZ).date(), cap=CONFIG.rescore_days)
     await _run_claimed(context, "scan",
-                       lambda: _do_scan_and_send(context.bot, CONFIG.chat_id,
+                       lambda: _do_scan_and_send(job_bot(context.bot), CONFIG.chat_id,
                                                  lookback))
 
 
@@ -987,6 +1002,8 @@ async def catchup_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def alive_job(context):
     """ทุก 5 นาที: heartbeat ให้ watchdog (ไม่แตะ Telegram)"""
+    await asyncio.to_thread(retry_exports, scan_csv.SCAN_CSV_PATH)
+    await asyncio.to_thread(retry_partial,scan_csv.SCAN_CSV_PATH,'US',_retry_missing_scan)
     write_alive(datetime.now(TZ))
 
 
@@ -1019,7 +1036,7 @@ async def on_button(update, context):
         # งานยาว (ดึง DR) → answer ก่อนกัน query หมดอายุ · ไม่แก้ markup ปุ่มใช้ซ้ำได้
         await _safe_answer(query, f"⏳ ทำแผน {syms[0]}")
         try:
-            await _send_plans(context.bot, CONFIG.chat_id, syms)
+            await _send_plans(job_bot(context.bot), CONFIG.chat_id, syms)
         except Exception:
             logger.exception("plan button %s failed", syms)
         return
@@ -1132,6 +1149,24 @@ def main():
     app = build_app(CONFIG)
     logger.info("bot starting")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+
+
+
+def _retry_missing_scan(symbols):
+    from bot import scan_csv
+    scan=run_scan(CONFIG, CONFIG.rescore_days,secondary_cal_fn=fetch_nasdaq_earnings,only_symbols=symbols)
+    picked=pick_rows(scan.get('rows') or [])
+    bars=lambda s: get_prices(s,250)
+    scores=live_scores(picked,bars)
+    scan_csv.record_scan_csv([(r,scores.get(r['symbol'])) for r in picked],date.fromisoformat(scan['to_date']))
+    state=rescore.load_state()
+    entries,pts,skipped=rescore.rescore_entries(state,[s for s in symbols if s in state and s not in scores],bars)
+    if entries:scan_csv.record_scan_csv(entries,date.fromisoformat(scan['to_date']))
+    missing={r['symbol'] for r in scan.get('pending',[]) if r.get('reason')=='no_data'}
+    missing.update(skipped)
+    return sorted(missing & set(symbols))
 
 
 if __name__ == "__main__":

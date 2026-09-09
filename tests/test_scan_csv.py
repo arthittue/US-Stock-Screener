@@ -100,12 +100,15 @@ def test_record_keeps_foreign_rows_and_extra_columns_intact(tmp_path):
     assert rows[2][1] == "NVDA" and len(rows) == 3
 
 
-def test_record_empty_entries_does_not_create_file(tmp_path):
+def test_record_empty_entries_records_success_without_fake_rows(tmp_path):
     p = tmp_path / "scan_log.csv"
-    assert record_scan_csv([], TODAY, path=p) == 0 and not p.exists()
+    assert record_scan_csv([], TODAY, path=p) == 0 and p.exists()
+    assert _read(p) == [CSV_COLUMNS]
 
 
-def test_record_write_failure_is_swallowed(tmp_path, caplog):
+def test_record_write_failure_is_durable(tmp_path, caplog, monkeypatch):
+    import scan_delivery
+    monkeypatch.setattr(scan_delivery, "replace_csv", lambda *a: (_ for _ in ()).throw(OSError("locked")))
     p = tmp_path / "no_such_dir" / "scan_log.csv"                  # โฟลเดอร์ไม่มี → OSError เหมือนไฟล์ถูก Excel ล็อก
     assert record_scan_csv([(_row(), _scored())], TODAY, path=p) == 0
     assert "scan_log.csv" in caplog.text

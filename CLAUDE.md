@@ -18,3 +18,6 @@ Local markdown — issue เก็บเป็นไฟล์ใน `.scratch/<f
 ### Domain docs
 
 Single-context — `CONTEXT.md` + `docs/adr/` ที่ราก repo ดู `docs/agents/domain.md`
+
+## การแก้โค้ดและเครื่องรันจริง
+ใช้ Linux ผ่าน SSH และ worktree ตาม REMOTE_WORKFLOW.md; GitHub origin เป็น source หลัก คู่มือ scan delivery v1 อยู่ใน README และ scan_delivery.py (บอท) / lib/scan-status.mjs (Gem)

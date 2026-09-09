@@ -115,3 +115,23 @@ python -m pytest -q
 - API FMP ต่อวัน ≈ 2–3 call (ปฏิทิน) → free tier 250 calls/วัน เหลือเฟือ
 - `settings.json` (ทุน/%เสี่ยง), `watchlist.json`, `auto_watch.json` เป็นข้อมูลส่วนตัว gitignored — ย้ายเครื่องต้องตั้งใหม่ (`/risk`, `ติดตาม`)
 - Log อยู่ที่ `bot.log`
+
+## Scan delivery v1 — 2026-09-09
+
+`scan_log.csv` เก็บเฉพาะหุ้นตาม schema เดิม; `scan_status.json` เป็นผลรอบสแกน (schema_version=1): market, run_id, started_at/completed_at, scan_date เวลา Bangkok, status, candidate_count/evaluated_count/qualified_count/skipped_count, retry_symbols, data_asof/signal_date และ csv_sha256 สถานะ success หมายถึงเขียน CSV สำเร็จแล้ว แม้มี 0 หุ้น; partial/failed/export_failed ห้ามถูกตีความเป็นไม่มีหุ้น
+
+`scan_delivery.py` เก็บผลใน `.scan_delivery/` ก่อน export แล้วแทน CSV แบบ atomic พร้อม checksum ชุดเดียวกัน heartbeat ลอง export ที่ค้างโดยไม่ยิงข้อมูลตลาดหรือ Telegram ซ้ำ partial จะลองดึงเฉพาะ retry_symbols หลัง 15 นาที ไม่เกิน 2 ครั้งในวันเดิม; ไม่เปลี่ยนสูตรคะแนนหรือหน้าต่างหลังงบ
+
+Gem ใช้สถานะและ checksum แทน mtime รอบสำเร็จ 0 หุ้นไม่ยิง Gem แต่ยัง track แผนเดิมและอัปเดตป้ายสถานะกลาง รอบใหม่ในวันเดียวกันใช้ run_id แยกกัน ไม่ถือว่าทำแล้วเพียงเพราะเคยทำตลาดนั้นวันนี้ Dashboard แสดงสถานะที่หัวรายการกลาง ไม่เพิ่มคอลัมน์ในตาราง
+
+ห้ามสร้างสถานะ success จากการ touch/copy CSV หรือเดาจากจำนวนแถวเก่า ถ้ายังไม่มี scan_status ให้รอรอบจริง; ผลเก่าใน Watchlist คงอยู่และยังติดตามต่อได้
+
+### กู้งานและการส่ง Telegram
+
+`job_runs.sqlite3` เป็น ledger เพิ่มจาก job_state.json เดิม ใช้ running/succeeded/failed พร้อม owner/เวลา lease 30 นาที โปรแกรมเปิดใหม่กู้ running ของโปรเซสที่ตายได้ รอบเดิมที่เสร็จแล้วไม่รันซ้ำ สถานะ JSON รุ่นเดิมถือเป็นรอบที่เสร็จแล้วเพื่อไม่ส่งประวัติย้อนหลังโดยเดา
+
+`durable_jobs.py` เก็บ intent ก่อนส่งและ dedup ข้อความที่ยืนยันว่าส่งแล้วตาม job/slot/payload กรณีโปรเซสดับหรือ timeout ระหว่างส่งไม่สามารถพิสูจน์ว่า Telegram รับแล้วหรือยัง จึงเก็บ uncertain และแสดงจำนวนในคำสั่งสถานะ ห้ามรับประกัน exactly-once ข้ามเครือข่าย
+
+ตรวจด้วย `python tools/recover_jobs.py` (ไม่ส่งข้อความ) หลังตรวจ Telegram แล้วใช้ `--confirm-sent ID` ถ้าพบข้อความ หรือ `--retry ID` ถ้ายืนยันว่าไม่ได้ส่ง ตัวเครื่องมือปลดรอบให้ catch-up ทำต่อ; ไม่ส่งข้อความเอง ถ้าเลยหน้าต่าง catch-up ของวันนั้นให้ตรวจและจัดการรอบด้วยผู้ดูแล ไม่แก้เวลาย้อนหลังเพื่อฝืนรัน
+
+สำรอง job_runs.sqlite3 พร้อม state เดิมก่อนย้ายเครื่อง ป้ายชื่อโปรเจกต์/commit รองรับ Git worktree แล้ว
