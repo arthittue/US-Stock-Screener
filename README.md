@@ -120,7 +120,7 @@ python -m pytest -q
 
 `scan_log.csv` เก็บเฉพาะหุ้นตาม schema เดิม; `scan_status.json` เป็นผลรอบสแกน (schema_version=1): market, run_id, started_at/completed_at, scan_date เวลา Bangkok, status, candidate_count/evaluated_count/qualified_count/skipped_count, retry_symbols, data_asof/signal_date และ csv_sha256 สถานะ success หมายถึงเขียน CSV สำเร็จแล้ว แม้มี 0 หุ้น; partial/failed/export_failed ห้ามถูกตีความเป็นไม่มีหุ้น
 
-`scan_delivery.py` เก็บผลใน `.scan_delivery/` ก่อน export แล้วแทน CSV แบบ atomic พร้อม checksum ชุดเดียวกัน heartbeat ลอง export ที่ค้างโดยไม่ยิงข้อมูลตลาดหรือ Telegram ซ้ำ partial จะลองดึงเฉพาะ retry_symbols หลัง 15 นาที ไม่เกิน 2 ครั้งในวันเดิม; ไม่เปลี่ยนสูตรคะแนนหรือหน้าต่างหลังงบ
+`scan_delivery.py` เก็บผลใน `.scan_delivery/` ก่อน export แล้วแทน CSV แบบ atomic พร้อม checksum ชุดเดียวกัน heartbeat ลอง export ที่ค้างโดยไม่ยิงข้อมูลตลาดหรือ Telegram ซ้ำ partial จะลองดึงเฉพาะ retry_symbols หลัง 15 นาที ไม่เกิน 2 ครั้งในวันเดิม; ไม่เปลี่ยนสูตรคะแนนหรือหน้าต่างหลังงบ · error ที่เกิดหลัง submit ผลสแกนแล้ว (เช่น Telegram timeout) ไม่ทำให้รอบเป็น failed อีกต่อไป: export แถวที่คิดเสร็จเป็น success/partial และบันทึกชื่อ error ไว้ใน `post_scan_error` แล้วจึงโยน error ต่อให้ ledger/catch-up ทำงานเดิม ส่วน error ก่อน submit หรือการปิดโปรเซสยังเป็น failed
 
 Gem ใช้สถานะและ checksum แทน mtime รอบสำเร็จ 0 หุ้นไม่ยิง Gem แต่ยัง track แผนเดิมและอัปเดตป้ายสถานะกลาง รอบใหม่ในวันเดียวกันใช้ run_id แยกกัน ไม่ถือว่าทำแล้วเพียงเพราะเคยทำตลาดนั้นวันนี้ Dashboard แสดงสถานะที่หัวรายการกลาง ไม่เพิ่มคอลัมน์ในตาราง
 

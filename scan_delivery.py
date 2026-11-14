@@ -102,8 +102,17 @@ def round_scan(market,path):
     try:
         yield batch
     except BaseException as error:
-        batch.update(status='failed',completed_at=_now(),error=type(error).__name__)
-        with _writing(path):_save(batch)
+        # submit แล้ว = คะแนนทุกแถวคิดเสร็จก่อน error · error หลังจากนั้นส่วนใหญ่คือ Telegram timeout
+        # เดิมทั้งรอบกลายเป็น failed แล้วผลสแกนค้างใน spool ไม่ถูก export (US 6 และ 9 พ.ย. 2026 หาย 105/98 แถว)
+        # ยังโยน error ต่อเพื่อให้ ledger นับงานล้มและ catch-up ส่งข้อความใหม่ · ปิดโปรเซส (ไม่ใช่ Exception) ยังเป็น failed
+        if isinstance(error,Exception) and batch['columns']:
+            batch.update(status='partial' if batch['retry_symbols'] else 'success',completed_at=_now(),
+                post_scan_error=type(error).__name__)
+            with _writing(path):_save(batch)
+            retry_exports(path)
+        else:
+            batch.update(status='failed',completed_at=_now(),error=type(error).__name__)
+            with _writing(path):_save(batch)
         raise
     else:
         batch.update(status='partial' if batch['retry_symbols'] else 'success',completed_at=_now())
